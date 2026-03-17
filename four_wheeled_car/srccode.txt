@@ -1,0 +1,250 @@
+#include <WiFi.h>
+#include <WebServer.h>
+const char* ssid = "ESP32_ROBOT";
+const char* password = "12345678";
+WebServer server(80);
+#define IN1 14
+#define IN2 27
+#define IN3 33
+#define IN4 32
+#define ENA 26
+#define ENB 25  // add second enable pin if you have it, else tie to ENA
+
+#define PWM_FREQ       1000
+#define PWM_RESOLUTION 8
+
+int spd = 200; // default speed 0-255
+
+void setup() {
+  Serial.begin(115200);
+  pinMode(IN1,OUTPUT); pinMode(IN2,OUTPUT);
+  pinMode(IN3,OUTPUT); pinMode(IN4,OUTPUT);
+
+  // PWM on enable pins
+  ledcAttach(ENA, PWM_FREQ, PWM_RESOLUTION);
+  ledcAttach(ENB, PWM_FREQ, PWM_RESOLUTION);
+
+  WiFi.softAP(ssid,password);
+  Serial.println("AP IP: " + WiFi.softAPIP().toString());
+
+  server.on("/",handleRoot);
+  server.on("/forward",forward);
+  server.on("/backward",backward);
+  server.on("/left",left);
+  server.on("/right",right);
+  server.on("/stop",stopCar);
+  server.on("/speed",setSpeed);
+  server.begin();
+}
+void loop(){ server.handleClient(); }
+
+// ── Speed setter ───────────────────────────────────────────────────
+void setSpeed(){
+  if(server.hasArg("val"))
+    spd = constrain(server.arg("val").toInt(), 0, 255);
+  Serial.println("Speed: " + String(spd));
+  server.send(200,"text/plain","OK");
+}
+
+// ── Motor functions ────────────────────────────────────────────────
+void forward(){
+  digitalWrite(IN1,HIGH); digitalWrite(IN2,LOW);
+  digitalWrite(IN3,HIGH); digitalWrite(IN4,LOW);
+  ledcWrite(ENA, spd);    ledcWrite(ENB, spd);
+  server.send(200,"text/plain","");
+}
+void backward(){
+  digitalWrite(IN1,LOW);  digitalWrite(IN2,HIGH);
+  digitalWrite(IN3,LOW);  digitalWrite(IN4,HIGH);
+  ledcWrite(ENA, spd);    ledcWrite(ENB, spd);
+  server.send(200,"text/plain","");
+}
+void left(){
+  digitalWrite(IN1,LOW);  digitalWrite(IN2,HIGH);
+  digitalWrite(IN3,HIGH); digitalWrite(IN4,LOW);
+  ledcWrite(ENA, spd);    ledcWrite(ENB, spd);
+  server.send(200,"text/plain","");
+}
+void right(){
+  digitalWrite(IN1,HIGH); digitalWrite(IN2,LOW);
+  digitalWrite(IN3,LOW);  digitalWrite(IN4,HIGH);
+  ledcWrite(ENA, spd);    ledcWrite(ENB, spd);
+  server.send(200,"text/plain","");
+}
+void stopCar(){
+  digitalWrite(IN1,LOW); digitalWrite(IN2,LOW);
+  digitalWrite(IN3,LOW); digitalWrite(IN4,LOW);
+  ledcWrite(ENA, 0);     ledcWrite(ENB, 0);
+  server.send(200,"text/plain","");
+}
+
+// ── HTML ───────────────────────────────────────────────────────────
+void handleRoot(){
+  String page = R"=====(
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,user-scalable=no">
+<title>ESP32 Car</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box;-webkit-tap-highlight-color:transparent;user-select:none;}
+body{
+  background:#0d0f14;
+  min-height:100vh;
+  display:flex;flex-direction:column;
+  align-items:center;justify-content:center;
+  font-family:Arial,sans-serif;
+}
+body::before{
+  content:'';position:fixed;inset:0;
+  background-image:
+    linear-gradient(rgba(0,229,255,.04) 1px,transparent 1px),
+    linear-gradient(90deg,rgba(0,229,255,.04) 1px,transparent 1px);
+  background-size:40px 40px;pointer-events:none;
+}
+h2{color:#00e5ff;font-size:22px;letter-spacing:5px;font-weight:900;
+   text-transform:uppercase;text-shadow:0 0 18px rgba(0,229,255,.55);margin-bottom:6px;}
+#cmd{font-size:12px;letter-spacing:3px;color:#444c60;text-transform:uppercase;
+     margin-bottom:20px;min-height:18px;transition:color .25s;}
+#cmd.go{color:#00ff9d;} #cmd.halt{color:#ff3d71;}
+
+/* speed panel */
+.spd-panel{
+  background:#12161f;border:1px solid #1e2535;border-radius:12px;
+  padding:14px 20px;margin-bottom:24px;width:300px;
+}
+.spd-row{display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;}
+.spd-title{font-size:10px;letter-spacing:3px;color:#444c60;text-transform:uppercase;}
+.spd-val{font-size:18px;font-weight:900;color:#00e5ff;letter-spacing:2px;}
+.spd-pct{font-size:10px;color:#444c60;margin-left:3px;}
+input[type=range]{
+  -webkit-appearance:none;width:100%;height:5px;border-radius:3px;outline:none;cursor:pointer;
+  background:linear-gradient(to right,#00e5ff 0%,#00e5ff var(--p,78%),#1e2535 var(--p,78%));
+}
+input[type=range]::-webkit-slider-thumb{
+  -webkit-appearance:none;width:20px;height:20px;border-radius:50%;
+  background:#00e5ff;box-shadow:0 0 8px rgba(0,229,255,.5);cursor:pointer;
+}
+
+/* dpad */
+.pad{display:grid;grid-template-columns:repeat(3,90px);grid-template-rows:repeat(3,90px);gap:10px;}
+.btn{
+  background:#12161f;border:1.5px solid #1e2535;border-radius:16px;
+  display:flex;flex-direction:column;align-items:center;justify-content:center;
+  gap:5px;color:#8090a8;font-size:9px;letter-spacing:2px;text-transform:uppercase;
+  cursor:pointer;transition:all .1s;touch-action:none;
+}
+.btn svg{width:30px;height:30px;}
+.btn.on{
+  background:#07304f;border-color:#00e5ff;color:#00e5ff;
+  box-shadow:0 0 16px rgba(0,229,255,.35);transform:scale(.92);
+}
+.btn.on svg path{fill:#00e5ff;}
+#bS{background:#170d13;border-color:#2e1520;}
+#bS.on{background:#2a0d1a;border-color:#ff3d71;box-shadow:0 0 16px rgba(255,61,113,.35);transform:scale(.92);}
+.tip{margin-top:22px;font-size:10px;letter-spacing:2px;color:#252c3a;text-transform:uppercase;}
+</style>
+</head>
+<body>
+<h2>ESP32 CAR</h2>
+<div id="cmd">STANDBY</div>
+
+<!-- Speed Slider -->
+<div class="spd-panel">
+  <div class="spd-row">
+    <span class="spd-title">THROTTLE</span>
+    <span><span class="spd-val" id="sval">200</span><span class="spd-pct" id="spct">(78%)</span></span>
+  </div>
+  <input type="range" id="slider" min="60" max="255" value="200" oninput="onSpeed(this.value)">
+</div>
+
+<!-- D-Pad -->
+<div class="pad">
+  <div></div>
+  <div class="btn" id="bF"
+    ontouchstart="go('forward','FORWARD',this)" ontouchend="stp(this)"
+    onmousedown="go('forward','FORWARD',this)" onmouseup="stp(this)" onmouseleave="stp(this)">
+    <svg viewBox="0 0 24 24"><path d="M12 4L3 18h18Z" fill="#8090a8"/></svg>FWD
+  </div>
+  <div></div>
+
+  <div class="btn" id="bL"
+    ontouchstart="go('left','LEFT',this)" ontouchend="stp(this)"
+    onmousedown="go('left','LEFT',this)" onmouseup="stp(this)" onmouseleave="stp(this)">
+    <svg viewBox="0 0 24 24"><path d="M16 4L4 12l12 8Z" fill="#8090a8"/></svg>LEFT
+  </div>
+  <div class="btn" id="bS"
+    ontouchstart="halt(this)" ontouchend="unhalt(this)"
+    onmousedown="halt(this)" onmouseup="unhalt(this)">
+    <svg viewBox="0 0 24 24"><rect x="5" y="5" width="14" height="14" rx="2" fill="#ff3d71"/></svg>
+    <span style="color:#ff3d71">STOP</span>
+  </div>
+  <div class="btn" id="bR"
+    ontouchstart="go('right','RIGHT',this)" ontouchend="stp(this)"
+    onmousedown="go('right','RIGHT',this)" onmouseup="stp(this)" onmouseleave="stp(this)">
+    <svg viewBox="0 0 24 24"><path d="M8 4l12 8L8 20Z" fill="#8090a8"/></svg>RIGHT
+  </div>
+
+  <div></div>
+  <div class="btn" id="bB"
+    ontouchstart="go('backward','REVERSE',this)" ontouchend="stp(this)"
+    onmousedown="go('backward','REVERSE',this)" onmouseup="stp(this)" onmouseleave="stp(this)">
+    <svg viewBox="0 0 24 24"><path d="M12 20L3 6h18Z" fill="#8090a8"/></svg>REV
+  </div>
+  <div></div>
+</div>
+<div class="tip">hold = move &nbsp;|&nbsp; release = stop</div>
+
+<script>
+var active=null;
+var lbl=document.getElementById('cmd');
+var curSpd=200;
+
+function send(u){fetch('/'+u).catch(function(){});}
+
+function onSpeed(v){
+  curSpd=parseInt(v);
+  document.getElementById('sval').textContent=v;
+  document.getElementById('spct').textContent='('+Math.round(v/255*100)+'%)';
+  var pct=((v-60)/(255-60)*100).toFixed(1);
+  document.getElementById('slider').style.setProperty('--p',pct+'%');
+  send('speed?val='+v);
+}
+// init slider gradient
+onSpeed(200);
+
+function go(cmd,label,el){
+  if(active&&active!==el){active.classList.remove('on');}
+  active=el; el.classList.add('on');
+  lbl.textContent=label; lbl.className='go';
+  send(cmd);
+}
+function stp(el){
+  if(!active) return;
+  el.classList.remove('on'); active=null;
+  lbl.textContent='STANDBY'; lbl.className='halt';
+  send('stop');
+  setTimeout(function(){if(!active)lbl.className='';},900);
+}
+function halt(el){el.classList.add('on'); send('stop'); lbl.textContent='STOP'; lbl.className='halt';}
+function unhalt(el){el.classList.remove('on'); lbl.textContent='STANDBY'; lbl.className='';}
+
+// keyboard
+var km={ArrowUp:'forward',w:'forward',ArrowDown:'backward',s:'backward',ArrowLeft:'left',a:'left',ArrowRight:'right',d:'right'};
+var kl={forward:'FORWARD',backward:'REVERSE',left:'LEFT',right:'RIGHT'};
+var kb={},bm={forward:'bF',backward:'bB',left:'bL',right:'bR'};
+document.addEventListener('keydown',function(e){
+  var c=km[e.key]; if(!c||kb[e.key]) return; kb[e.key]=1; e.preventDefault();
+  go(c,kl[c],document.getElementById(bm[c]));
+});
+document.addEventListener('keyup',function(e){
+  var c=km[e.key]; if(!c) return; delete kb[e.key];
+  stp(document.getElementById(bm[c]));
+});
+</script>
+</body>
+</html>
+)=====";
+  server.send(200,"text/html",page);
+}
